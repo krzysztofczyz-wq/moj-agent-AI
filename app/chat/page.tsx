@@ -14,6 +14,7 @@ export default function ChatPage() {
   const [isDbLoading, setIsDbLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string | null>(null);
 
   const convIdRef = useRef<string | null>(null);
   convIdRef.current = currentConversationId;
@@ -40,6 +41,18 @@ export default function ChatPage() {
           await supabase.from('conversations').update({
             updated_at: new Date().toISOString()
           }).eq('id', activeId);
+
+          // If name is not set on client yet, check if it was updated in DB
+          if (!userName && userId) {
+            const { data: profile } = await supabase
+              .from('user_profiles')
+              .select('name')
+              .eq('id', userId)
+              .single();
+            if (profile?.name) {
+              setUserName(profile.name);
+            }
+          }
         } catch (err) {
           console.error('Error saving assistant response:', err);
         }
@@ -78,11 +91,13 @@ export default function ChatPage() {
         // Verify/Create profile
         const { data: profile } = await supabase
           .from('user_profiles')
-          .select('id')
+          .select('id, name')
           .eq('id', activeUser.id)
           .single();
         
-        if (!profile) {
+        if (profile) {
+          setUserName(profile.name);
+        } else {
           await supabase.from('user_profiles').insert({
             id: activeUser.id,
             name: null,
@@ -337,6 +352,33 @@ export default function ChatPage() {
           <div className="db-loading-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', gap: '1rem', minHeight: '200px' }}>
             <div className="db-spinner" style={{ width: '40px', height: '40px', border: '4px solid rgba(255,255,255,0.1)', borderTop: '4px solid #6366f1', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
             <p style={{ margin: 0, fontSize: '0.9rem' }}>Wczytywanie historii rozmowy...</p>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="welcome-card" style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+            padding: '3rem 2rem',
+            margin: '2rem auto',
+            maxWidth: '600px',
+            background: 'rgba(255, 255, 255, 0.015)',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            backdropFilter: 'blur(10px)',
+            borderRadius: '20px',
+            color: '#f4f4f7',
+            animation: 'fadeIn 0.5s ease'
+          }}>
+            <span style={{ fontSize: '3rem', marginBottom: '1.25rem' }}>👋</span>
+            <h2 style={{ fontSize: '1.75rem', fontWeight: 800, margin: '0 0 0.75rem 0', background: 'linear-gradient(135deg, #ffffff, #a5b4fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              {userName ? `Cześć, ${userName}!` : 'Witaj w Antigravity Agent!'}
+            </h2>
+            <p style={{ color: '#94a3b8', fontSize: '0.95rem', lineHeight: '1.6', margin: 0, maxWidth: '480px' }}>
+              {userName 
+                ? 'Miło Cię widzieć ponownie! O czym chciałbyś dzisiaj porozmawiać? Możesz zadać mi pytanie finansowe, poprosić o analizę ETF lub optymalizację portfela.'
+                : 'Jestem Oskar – Twój doradca inwestycyjny. Zanim zaczniemy analizować rynek, zdradzisz mi jak masz na imię?'}
+            </p>
           </div>
         ) : (
           messages.map((m) => {
