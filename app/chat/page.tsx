@@ -13,6 +13,7 @@ export default function ChatPage() {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [isDbLoading, setIsDbLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
 
   const convIdRef = useRef<string | null>(null);
   convIdRef.current = currentConversationId;
@@ -63,36 +64,31 @@ export default function ChatPage() {
     const initializeUserAndSession = async () => {
       setIsDbLoading(true);
       try {
-        // 1. Initialize user_id
-        let localUserId = localStorage.getItem('user_id');
-        if (!localUserId) {
-          localUserId = crypto.randomUUID();
-          localStorage.setItem('user_id', localUserId);
-          
-          // Create a new user profile record in Supabase
+        // 1. Get user session from Supabase Auth
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setIsDbLoading(false);
+          return;
+        }
+
+        const activeUser = session.user;
+        setUserId(activeUser.id);
+        setToken(session.access_token);
+
+        // Verify/Create profile
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('id')
+          .eq('id', activeUser.id)
+          .single();
+        
+        if (!profile) {
           await supabase.from('user_profiles').insert({
-            id: localUserId,
+            id: activeUser.id,
             name: null,
             preferences: {}
           });
-        } else {
-          // Verify if the user profile exists in DB
-          const { data: profile } = await supabase
-            .from('user_profiles')
-            .select('id')
-            .eq('id', localUserId)
-            .single();
-          
-          // Re-create user profile if it doesn't exist (e.g. database cleared)
-          if (!profile) {
-            await supabase.from('user_profiles').insert({
-              id: localUserId,
-              name: null,
-              preferences: {}
-            });
-          }
         }
-        setUserId(localUserId);
 
         // 2. Determine which conversation to load
         let targetConvId: string | null = null;
@@ -102,11 +98,12 @@ export default function ChatPage() {
         const queryId = params.get('id');
         
         if (queryId) {
-          // Verify if this conversation exists
+          // Verify if this conversation exists for this user
           const { data: conv } = await supabase
             .from('conversations')
             .select('*')
             .eq('id', queryId)
+            .eq('user_id', activeUser.id)
             .single();
           if (conv) {
             targetConvId = queryId;
@@ -114,10 +111,11 @@ export default function ChatPage() {
         }
 
         if (!targetConvId) {
-          // Fetch last conversation ordered by updated_at desc
+          // Fetch last conversation ordered by updated_at desc, filtered by user_id!
           const { data: conversations, error: convError } = await supabase
             .from('conversations')
             .select('*')
+            .eq('user_id', activeUser.id)
             .order('updated_at', { ascending: false })
             .limit(1);
 
@@ -166,7 +164,7 @@ export default function ChatPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || !userId) return;
 
     let convId = currentConversationId;
     const userText = input.trim();
@@ -176,7 +174,7 @@ export default function ChatPage() {
         const title = userText.slice(0, 50);
         const { data: newConv, error: newConvError } = await supabase
           .from('conversations')
-          .insert({ title })
+          .insert({ title, user_id: userId })
           .select()
           .single();
 
@@ -201,7 +199,10 @@ export default function ChatPage() {
           if (error) console.error('Error updating conversation updated_at:', error);
         });
 
-      sendMessage({ text: userText }, { body: { mode, model, userId } });
+      sendMessage({ text: userText }, { 
+        body: { mode, model, userId },
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
       setInput('');
     } catch (err) {
       console.error('Failed to submit message:', err);
@@ -209,7 +210,7 @@ export default function ChatPage() {
   };
 
   const handleSuggestionClick = async (suggestion: string) => {
-    if (isLoading) return;
+    if (isLoading || !userId) return;
 
     let convId = currentConversationId;
     const userText = suggestion.trim();
@@ -219,7 +220,7 @@ export default function ChatPage() {
         const title = userText.slice(0, 50);
         const { data: newConv, error: newConvError } = await supabase
           .from('conversations')
-          .insert({ title })
+          .insert({ title, user_id: userId })
           .select()
           .single();
 
@@ -244,7 +245,10 @@ export default function ChatPage() {
           if (error) console.error('Error updating conversation updated_at:', error);
         });
 
-      sendMessage({ text: userText }, { body: { mode, model, userId } });
+      sendMessage({ text: userText }, { 
+        body: { mode, model, userId },
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
     } catch (err) {
       console.error('Failed to submit suggestion:', err);
     }

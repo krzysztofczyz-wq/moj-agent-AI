@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
 
 interface DocumentInfo {
   title: string;
@@ -85,6 +86,7 @@ export default function UploadKnowledgePage() {
   const [content, setContent] = useState('');
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [isLoadingList, setIsLoadingList] = useState(true);
+  const [token, setToken] = useState<string | null>(null);
 
   // Ingestion status states
   const [isProcessing, setIsProcessing] = useState(false);
@@ -106,21 +108,39 @@ export default function UploadKnowledgePage() {
 
   // Fetch all documents on mount
   useEffect(() => {
-    fetchDocuments();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setToken(session.access_token);
+        fetchDocuments(session.access_token);
 
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const docParam = params.get('doc');
-      if (docParam) {
-        handlePreviewDoc(docParam);
+        const params = new URLSearchParams(window.location.search);
+        const docParam = params.get('doc');
+        if (docParam) {
+          handlePreviewDoc(docParam, session.access_token);
+        }
       }
-    }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        setToken(session.access_token);
+      } else {
+        setToken(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (activeToken = token) => {
+    if (!activeToken) return;
     setIsLoadingList(true);
     try {
-      const res = await fetch('/api/upload-knowledge');
+      const res = await fetch('/api/upload-knowledge', {
+        headers: {
+          'Authorization': `Bearer ${activeToken}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents || []);
@@ -141,7 +161,7 @@ export default function UploadKnowledgePage() {
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !content.trim() || isProcessing) return;
+    if (!title.trim() || !content.trim() || isProcessing || !token) return;
 
     setIsProcessing(true);
     setProgressCurrent(0);
@@ -152,7 +172,10 @@ export default function UploadKnowledgePage() {
     try {
       const response = await fetch('/api/upload-knowledge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ title, content }),
       });
 
@@ -183,7 +206,7 @@ export default function UploadKnowledgePage() {
               setSuccessMessage(`✅ Zapisano pomyślnie ${data.chunks_saved} fragmentów w bazie wiedzy!`);
               setTitle('');
               setContent('');
-              fetchDocuments();
+              fetchDocuments(token);
             } else if (data.status === 'error') {
               setErrorMessage(`❌ Błąd: ${data.message}`);
             }
@@ -202,14 +225,17 @@ export default function UploadKnowledgePage() {
   const handleDelete = async (docTitle: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Avoid triggering document preview click
     const confirmed = window.confirm(`Czy na pewno chcesz usunąć dokument "${docTitle}" ze wszystkimi jego fragmentami?`);
-    if (!confirmed) return;
+    if (!confirmed || !token) return;
 
     try {
       const res = await fetch(`/api/upload-knowledge?title=${encodeURIComponent(docTitle)}`, {
         method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
       if (res.ok) {
-        fetchDocuments();
+        fetchDocuments(token);
         if (previewDocTitle === docTitle) {
           setPreviewDocTitle(null);
         }
@@ -222,12 +248,17 @@ export default function UploadKnowledgePage() {
     }
   };
 
-  const handlePreviewDoc = async (docTitle: string) => {
+  const handlePreviewDoc = async (docTitle: string, activeToken = token) => {
+    if (!activeToken) return;
     setPreviewDocTitle(docTitle);
     setIsLoadingChunks(true);
     setDocChunks([]);
     try {
-      const res = await fetch(`/api/upload-knowledge?title=${encodeURIComponent(docTitle)}`);
+      const res = await fetch(`/api/upload-knowledge?title=${encodeURIComponent(docTitle)}`, {
+        headers: {
+          'Authorization': `Bearer ${activeToken}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         setDocChunks(data.chunks || []);
@@ -243,7 +274,7 @@ export default function UploadKnowledgePage() {
 
   const handleSearchTest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim() || isSearching) return;
+    if (!searchQuery.trim() || isSearching || !token) return;
 
     setIsSearching(true);
     setSearchResults([]);
@@ -252,7 +283,10 @@ export default function UploadKnowledgePage() {
     try {
       const res = await fetch('/api/search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ query: searchQuery }),
       });
 

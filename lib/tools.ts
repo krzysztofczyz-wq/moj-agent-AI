@@ -447,114 +447,128 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+export async function executeSearchKnowledge(query: string, supabaseClient: any = supabase, userId?: string | null) {
+  try {
+    if (!query || !query.trim()) {
+      return { results: [], total_found: 0, message: 'Zapytanie nie może być puste.' };
+    }
+
+    // 1. Generate embedding for query
+    const embedding = await generateQueryEmbedding(query.trim());
+
+    // 2. Query match_documents from Supabase RPC first
+    try {
+      const { data, error } = await supabaseClient.rpc('match_documents', {
+        query_embedding: embedding,
+        match_threshold: 0.5,
+        match_count: 5,
+      });
+
+      if (!error && data && data.length > 0) {
+        // Post-filter by user_id if userId is specified (extra security if RLS is not configured)
+        const filteredData = userId ? data.filter((d: any) => d.user_id === userId) : data;
+
+        const results = filteredData.map((doc: any) => {
+          const metadata = doc.metadata || doc.metdata || {};
+          return {
+            title: doc.title,
+            content: doc.content,
+            similarity: doc.similarity,
+            metadata,
+            added_at: doc.created_at ? doc.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          };
+        });
+        return {
+          results,
+          total_found: results.length,
+          source_documents: Array.from(new Set(results.map((doc: any) => doc.title).filter(Boolean))),
+        };
+      }
+
+      if (error) {
+        console.warn(`Supabase RPC match_documents failed: ${error.message}. Trying in-memory fallback.`);
+      }
+    } catch (rpcErr: any) {
+      console.warn(`RPC call failed: ${rpcErr.message}. Trying in-memory fallback.`);
+    }
+
+    // 3. In-memory fallback (client-side cosine similarity)
+    console.log('Running client-side in-memory cosine similarity fallback...');
+    let queryBuilder = supabaseClient
+      .from('documents')
+      .select('id, title, content, embedding, created_at, metdata, user_id');
+
+    if (userId) {
+      queryBuilder = queryBuilder.eq('user_id', userId);
+    }
+
+    const { data: allDocs, error: fetchErr } = await queryBuilder;
+
+    if (fetchErr) {
+      throw new Error(`Supabase fetch fallback failed: ${fetchErr.message}`);
+    }
+
+    if (!allDocs || allDocs.length === 0) {
+      return {
+        results: [],
+        total_found: 0,
+        source_documents: [],
+        message: 'Nie znaleziono informacji w bazie wiedzy (baza jest pusta).',
+      };
+    }
+
+    const scoredDocs = allDocs
+      .map((doc: any) => {
+        let docEmbedding: number[] = [];
+        if (Array.isArray(doc.embedding)) {
+          docEmbedding = doc.embedding;
+        } else if (typeof doc.embedding === 'string') {
+          docEmbedding = doc.embedding
+            .replace(/[\[\]]/g, '')
+            .split(',')
+            .map(Number);
+        }
+
+        if (docEmbedding.length !== embedding.length) {
+          return { ...doc, similarity: 0 };
+        }
+
+        const similarity = cosineSimilarity(docEmbedding, embedding);
+        const metadata = doc.metdata || {};
+        const added_at = doc.created_at ? doc.created_at.slice(0, 10) : '';
+
+        return {
+          title: doc.title,
+          content: doc.content,
+          similarity,
+          metadata,
+          added_at,
+        };
+      })
+      .filter((doc: any) => doc.similarity >= 0.5)
+      .sort((a: any, b: any) => b.similarity - a.similarity)
+      .slice(0, 5);
+
+    return {
+      results: scoredDocs,
+      total_found: scoredDocs.length,
+      source_documents: Array.from(new Set(scoredDocs.map((doc: any) => doc.title).filter(Boolean))),
+    };
+  } catch (err: any) {
+    console.error('searchKnowledge error:', err);
+    return {
+      error: `Wyszukiwanie w bazie wiedzy nie powiodło się: ${err.message || err}`,
+    };
+  }
+}
+
 export const searchKnowledge = tool({
   description: 'Wyszukuje informacje w bazie wiedzy firmy (cenniki, FAQ, regulaminy, oferty). Używaj ZAWSZE gdy użytkownik pyta o ceny, pakiety, koszty, procedury, regulaminy, warunki, FAQ lub pytania o firmę/usługi.',
   parameters: z.object({
     query: z.string().describe('Pytanie lub słowa kluczowe do wyszukania w bazie wiedzy (np. "pakiet Premium cena")'),
   }),
   execute: async ({ query }: { query: string }) => {
-    try {
-      if (!query || !query.trim()) {
-        return { results: [], total_found: 0, message: 'Zapytanie nie może być puste.' };
-      }
-
-      // 1. Generate embedding for query
-      const embedding = await generateQueryEmbedding(query.trim());
-
-      // 2. Query match_documents from Supabase RPC first
-      try {
-        const { data, error } = await supabase.rpc('match_documents', {
-          query_embedding: embedding,
-          match_threshold: 0.5,
-          match_count: 5,
-        });
-
-        if (!error && data && data.length > 0) {
-          const results = data.map((doc: any) => {
-            const metadata = doc.metadata || doc.metdata || {};
-            return {
-              title: doc.title,
-              content: doc.content,
-              similarity: doc.similarity,
-              metadata,
-              added_at: doc.created_at ? doc.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
-            };
-          });
-          return {
-            results,
-            total_found: results.length,
-            source_documents: Array.from(new Set(results.map((doc: any) => doc.title).filter(Boolean))),
-          };
-        }
-
-        if (error) {
-          console.warn(`Supabase RPC match_documents failed: ${error.message}. Trying in-memory fallback.`);
-        }
-      } catch (rpcErr: any) {
-        console.warn(`RPC call failed: ${rpcErr.message}. Trying in-memory fallback.`);
-      }
-
-      // 3. In-memory fallback (client-side cosine similarity)
-      console.log('Running client-side in-memory cosine similarity fallback...');
-      const { data: allDocs, error: fetchErr } = await supabase
-        .from('documents')
-        .select('id, title, content, embedding, created_at, metdata');
-
-      if (fetchErr) {
-        throw new Error(`Supabase fetch fallback failed: ${fetchErr.message}`);
-      }
-
-      if (!allDocs || allDocs.length === 0) {
-        return {
-          results: [],
-          total_found: 0,
-          source_documents: [],
-          message: 'Nie znaleziono informacji w bazie wiedzy (baza jest pusta).',
-        };
-      }
-
-      const scoredDocs = allDocs
-        .map((doc: any) => {
-          let docEmbedding: number[] = [];
-          if (Array.isArray(doc.embedding)) {
-            docEmbedding = doc.embedding;
-          } else if (typeof doc.embedding === 'string') {
-            docEmbedding = doc.embedding
-              .replace(/[\[\]]/g, '')
-              .split(',')
-              .map(Number);
-          }
-
-          if (docEmbedding.length !== embedding.length) {
-            return { ...doc, similarity: 0 };
-          }
-
-          const similarity = cosineSimilarity(docEmbedding, embedding);
-          const metadata = doc.metdata || {};
-          const added_at = doc.created_at ? doc.created_at.slice(0, 10) : '';
-
-          return {
-            title: doc.title,
-            content: doc.content,
-            similarity,
-            metadata,
-            added_at,
-          };
-        })
-        .filter((doc: any) => doc.similarity >= 0.5)
-        .sort((a: any, b: any) => b.similarity - a.similarity)
-        .slice(0, 5);
-
-      return {
-        results: scoredDocs,
-        total_found: scoredDocs.length,
-        source_documents: Array.from(new Set(scoredDocs.map((doc: any) => doc.title).filter(Boolean))),
-      };
-    } catch (err: any) {
-      console.error('searchKnowledge error:', err);
-      return {
-        error: `Wyszukiwanie w bazie wiedzy nie powiodło się: ${err.message || err}`,
-      };
-    }
+    return executeSearchKnowledge(query);
   },
 } as any);
+

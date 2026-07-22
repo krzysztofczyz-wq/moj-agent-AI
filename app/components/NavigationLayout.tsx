@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
-import { usePathname } from 'next/navigation';
+import React, { useState, useEffect } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { supabase } from '@/lib/supabase';
 
 interface NavItem {
   href: string;
@@ -27,7 +28,34 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function NavigationLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Check initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+      if (!session && pathname !== '/login') {
+        router.replace('/login');
+      }
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+      if (!session && pathname !== '/login') {
+        router.replace('/login');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [pathname, router]);
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen);
@@ -36,6 +64,30 @@ export default function NavigationLayout({ children }: { children: React.ReactNo
   const handleLinkClick = () => {
     setIsMobileMenuOpen(false);
   };
+
+  if (pathname === '/login') {
+    return <div className="login-root-wrapper">{children}</div>;
+  }
+
+  if (loading) {
+    return (
+      <div style={{
+        display: 'flex',
+        height: '100vh',
+        width: '100vw',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#06060c',
+        color: '#f4f4f7'
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+          <div style={{ width: '40px', height: '40px', border: '4px solid rgba(255,255,255,0.1)', borderTop: '4px solid #6366f1', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+          <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+          <p style={{ margin: 0, fontSize: '0.9rem', color: '#94a3b8' }}>Wczytywanie sesji...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="layout-root">
@@ -247,8 +299,39 @@ export default function NavigationLayout({ children }: { children: React.ReactNo
             );
           })}
         </nav>
-        <div className="sidebar-footer">
-          <span>🟢</span> System aktywny
+        <div className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5rem', padding: '0.75rem 1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: '#94a3b8', wordBreak: 'break-all' }}>
+            <span>🟢</span> {user?.email || 'System aktywny'}
+          </div>
+          <button 
+            onClick={async () => {
+              await supabase.auth.signOut();
+              router.push('/login');
+            }}
+            style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: '#fca5a5',
+              padding: '0.35rem',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              textAlign: 'center',
+              width: '100%',
+              transition: 'all 0.2s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.3)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+            }}
+          >
+            Wyloguj się
+          </button>
         </div>
       </aside>
 

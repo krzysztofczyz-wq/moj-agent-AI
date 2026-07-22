@@ -28,6 +28,11 @@ export default function HistoryPage() {
   const fetchConversations = async () => {
     setLoading(true);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setLoading(false);
+        return;
+      }
       // Fetch conversations and their messages in a single query
       const { data, error } = await supabase
         .from('conversations')
@@ -43,6 +48,7 @@ export default function HistoryPage() {
             created_at
           )
         `)
+        .eq('user_id', session.user.id)
         .order('updated_at', { ascending: false });
 
       if (error) throw error;
@@ -66,6 +72,9 @@ export default function HistoryPage() {
     if (!confirmed) return;
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
       // 1. Delete messages first due to foreign key constraints
       const { error: msgErr } = await supabase
         .from('messages')
@@ -77,7 +86,8 @@ export default function HistoryPage() {
       const { error: convErr } = await supabase
         .from('conversations')
         .delete()
-        .eq('id', id);
+        .eq('id', id)
+        .eq('user_id', session.user.id);
       if (convErr) throw convErr;
 
       // 3. Update local state

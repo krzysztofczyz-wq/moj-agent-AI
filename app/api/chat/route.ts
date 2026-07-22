@@ -1,8 +1,8 @@
 import { google } from '@ai-sdk/google';
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, toUIMessageStream, convertToModelMessages, tool, isStepCount } from 'ai';
 import { z } from 'zod';
-import { supabase } from '@/lib/supabase';
-import { searchKnowledge, calculator } from '@/lib/tools';
+import { supabase, getSupabaseClient } from '@/lib/supabase';
+import { executeSearchKnowledge, calculator } from '@/lib/tools';
 
 if (process.env.ENABLE_SEARCH_GROUNDING === 'true') {
   console.warn(
@@ -147,9 +147,24 @@ const getModelsToTry = (modelParam: string) => {
 };
 
 export async function POST(req: Request) {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader) {
+    return new Response(JSON.stringify({ error: 'Unauthorized: missing authorization header' }), { status: 401 });
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const userClient = getSupabaseClient(token);
+
+  const { data: { user }, error: authError } = await userClient.auth.getUser();
+  if (authError || !user) {
+    return new Response(JSON.stringify({ error: 'Unauthorized: invalid token' }), { status: 401 });
+  }
+
+  const userId = user.id;
+
   const body = await req.json();
   console.log("API POST Body received:", JSON.stringify(body));
-  const { messages: rawMessages, mode = 'casual', model = 'flash', userId } = body;
+  const { messages: rawMessages, mode = 'casual', model = 'flash' } = body;
 
   const messages = rawMessages.map((m: any) => {
     const parts = m.parts || (m.content ? [{ type: 'text', text: m.content }] : []);
@@ -174,7 +189,7 @@ export async function POST(req: Request) {
   let userProfile: any = null;
   if (userId) {
     try {
-      const { data } = await supabase
+      const { data } = await userClient
         .from('user_profiles')
         .select('*')
         .eq('id', userId)
@@ -196,7 +211,7 @@ export async function POST(req: Request) {
       const detectedName = nameMatch[1].trim();
       console.log(`[Personalization] Detected name in text: ${detectedName}`);
       try {
-        await supabase
+        await userClient
           .from('user_profiles')
           .update({ name: detectedName })
           .eq('id', userId);
@@ -218,14 +233,14 @@ export async function POST(req: Request) {
 
       console.log(`[Personalization] Detected preference: ${key} = ${val}`);
       try {
-        const { data } = await supabase
+        const { data } = await userClient
           .from('user_profiles')
           .select('preferences')
           .eq('id', userId)
           .single();
         const currentPrefs = data?.preferences || {};
         const updatedPrefs = { ...currentPrefs, [key]: val };
-        await supabase
+        await userClient
           .from('user_profiles')
           .update({ preferences: updatedPrefs })
           .eq('id', userId);
@@ -300,7 +315,15 @@ export async function POST(req: Request) {
         console.log(`[Chat] containsUrl=${containsUrl}, needsSearch=${needsSearch}`);
 
         const tools: Record<string, any> = {
-          searchKnowledge,
+          searchKnowledge: tool({
+            description: 'Wyszukuje informacje w bazie wiedzy firmy (cenniki, FAQ, regulaminy, oferty). Używaj ZAWSZE gdy użytkownik pyta o ceny, pakiety, koszty, procedury, regulaminy, warunki, FAQ lub pytania o firmę/usługi.',
+            parameters: z.object({
+              query: z.string().describe('Pytanie lub słowa kluczowe do wyszukania w bazie wiedzy (np. "pakiet Premium cena")'),
+            }),
+            execute: async ({ query }: { query: string }) => {
+              return executeSearchKnowledge(query, userClient, userId);
+            },
+          } as any),
           calculator,
           saveUserName: tool({
             description: 'Zapisuje imię użytkownika w jego profilu w bazie danych.',
@@ -312,7 +335,7 @@ export async function POST(req: Request) {
               const finalName = (name || userProfile?.name || '').trim();
               if (!finalName) return { success: false, error: 'Brak imienia do zapisania' };
               try {
-                const { error } = await supabase
+                const { error } = await userClient
                   .from('user_profiles')
                   .update({ name: finalName })
                   .eq('id', userId);
@@ -332,7 +355,7 @@ export async function POST(req: Request) {
             execute: async ({ key, value }: { key: string, value: string }) => {
               if (!userId) return { success: false, error: 'Brak identyfikatora użytkownika' };
               try {
-                const { data, error: fetchErr } = await supabase
+                const { data, error: fetchErr } = await userClient
                   .from('user_profiles')
                   .select('preferences')
                   .eq('id', userId)
@@ -342,7 +365,7 @@ export async function POST(req: Request) {
                 const currentPrefs = data?.preferences || {};
                 const updatedPrefs = { ...currentPrefs, [key]: value };
 
-                const { error: updateErr } = await supabase
+                const { error: updateErr } = await userClient
                   .from('user_profiles')
                   .update({ preferences: updatedPrefs })
                   .eq('id', userId);

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, getSupabaseClient } from '@/lib/supabase';
 import { splitIntoChunks } from '@/lib/chunking';
 
 // Helper to generate embedding using the local /api/embed logic directly to avoid self-fetch issues in some environments
@@ -52,9 +52,9 @@ async function generateEmbedding(text: string, apiKey: string): Promise<number[]
 }
 
 // Dynamic helper to check if database uses 'metadata' or 'metdata'
-async function getMetadataKey(): Promise<string> {
+async function getMetadataKey(supabaseClient: any): Promise<string> {
   try {
-    const { error } = await supabase.from('documents').select('metadata').limit(0);
+    const { error } = await supabaseClient.from('documents').select('metadata').limit(0);
     if (error && (error.code === '42703' || error.message.includes('metadata'))) {
       return 'metdata';
     }
@@ -67,6 +67,17 @@ async function getMetadataKey(): Promise<string> {
 // POST: Process and save knowledge chunks, streaming progress back to client
 export async function POST(req: Request) {
   try {
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      return NextResponse.json({ error: 'Unauthorized: missing authorization header' }, { status: 401 });
+    }
+    const token = authHeader.replace('Bearer ', '');
+    const userClient = getSupabaseClient(token);
+    const { data: { user }, error: authError } = await userClient.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized: invalid token' }, { status: 401 });
+    }
+
     const { title, content } = await req.json();
 
     if (!title || typeof title !== 'string' || !content || typeof content !== 'string') {
@@ -89,7 +100,7 @@ export async function POST(req: Request) {
     const totalChunks = chunks.length;
 
     // Detect the correct metadata/metdata key dynamically
-    const metadataKey = await getMetadataKey();
+    const metadataKey = await getMetadataKey(userClient);
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -119,11 +130,12 @@ export async function POST(req: Request) {
               title,
               content: chunkText,
               embedding,
+              user_id: user.id,
               created_at: new Date().toISOString(), // explicitly supply created_at in case database lacks default value
             };
             payload[metadataKey] = metadataObj;
 
-            const { error: insertError } = await supabase.from('documents').insert(payload);
+            const { error: insertError } = await userClient.from('documents').insert(payload);
 
             if (insertError) {
               throw new Error(`Supabase insert error at chunk ${i + 1}/${totalChunks}: ${insertError.message}`);
@@ -172,14 +184,26 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   try {
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      return NextResponse.json({ error: 'Unauthorized: missing authorization header' }, { status: 401 });
+    }
+    const token = authHeader.replace('Bearer ', '');
+    const userClient = getSupabaseClient(token);
+    const { data: { user }, error: authError } = await userClient.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized: invalid token' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const title = searchParams.get('title');
 
     if (title) {
-      const { data, error } = await supabase
+      const { data, error } = await userClient
         .from('documents')
         .select('id, title, content, created_at, metdata')
-        .eq('title', title);
+        .eq('title', title)
+        .eq('user_id', user.id);
 
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 });
@@ -188,9 +212,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ chunks: data || [] });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await userClient
       .from('documents')
-      .select('title, created_at');
+      .select('title, created_at')
+      .eq('user_id', user.id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -231,6 +256,17 @@ export async function GET(req: Request) {
 // DELETE: Delete a document by title
 export async function DELETE(req: Request) {
   try {
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      return NextResponse.json({ error: 'Unauthorized: missing authorization header' }, { status: 401 });
+    }
+    const token = authHeader.replace('Bearer ', '');
+    const userClient = getSupabaseClient(token);
+    const { data: { user }, error: authError } = await userClient.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized: invalid token' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const title = searchParams.get('title');
 
@@ -238,10 +274,11 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Title parameter is required' }, { status: 400 });
     }
 
-    const { error } = await supabase
+    const { error } = await userClient
       .from('documents')
       .delete()
-      .eq('title', title);
+      .eq('title', title)
+      .eq('user_id', user.id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });

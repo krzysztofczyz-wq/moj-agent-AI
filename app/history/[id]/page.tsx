@@ -31,11 +31,18 @@ export default function ConversationDetailsPage({ params }: { params: Promise<{ 
     const fetchConversationDetails = async () => {
       setLoading(true);
       try {
-        // Fetch conversation and its messages
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setLoading(false);
+          return;
+        }
+
+        // Fetch conversation and its messages, securing with user_id
         const { data: convData, error: convErr } = await supabase
           .from('conversations')
           .select('id, title, created_at, updated_at')
           .eq('id', conversationId)
+          .eq('user_id', session.user.id)
           .single();
 
         if (convErr) throw convErr;
