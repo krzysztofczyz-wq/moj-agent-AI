@@ -3,7 +3,7 @@ import { streamText } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
 import { readWebPage, searchWikipedia, calculator } from '@/lib/tools';
 
-export const maxDuration = 60; // Allow 60s for research & generation
+export const runtime = 'edge';
 
 export async function POST(req: Request) {
   try {
