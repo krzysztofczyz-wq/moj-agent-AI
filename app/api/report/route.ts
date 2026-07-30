@@ -81,15 +81,6 @@ ZASADY:
       calculator,
     };
 
-    // If search grounding is NOT enabled, we can expose the googleSearch tool as a fallback if supported
-    if (!useSearchGrounding) {
-      try {
-        tools.googleSearch = (google as any).tools.googleSearch({});
-      } catch (e) {
-        console.warn('Google Search tool not available on provider, skipping tool insertion.');
-      }
-    }
-
     const result = streamText({
       model: modelInstance,
       system: systemPrompt,
