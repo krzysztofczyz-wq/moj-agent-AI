@@ -45,11 +45,14 @@ export default function ReportPage() {
     setErrorMsg(null);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeToken = session?.access_token ?? null;
+
       const response = await fetch('/api/report', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({ topic })
       });
@@ -108,11 +111,14 @@ export default function ReportPage() {
     setErrorMsg(null);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeToken = session?.access_token ?? null;
+
       const response = await fetch('/api/upload-knowledge', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({
           title: `Raport: ${topic.slice(0, 80)}`,

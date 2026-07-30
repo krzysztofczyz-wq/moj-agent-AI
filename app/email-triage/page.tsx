@@ -96,11 +96,14 @@ export default function EmailTriagePage() {
     }
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeToken = session?.access_token ?? null;
+
       const response = await fetch('/api/email-triage', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({ emails })
       });
