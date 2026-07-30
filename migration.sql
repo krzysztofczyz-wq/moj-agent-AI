@@ -30,3 +30,15 @@ ON briefings
 FOR SELECT 
 TO authenticated 
 USING (auth.uid() = user_id);
+
+-- 5. Utworzenie tabeli webhook_events dla zewnętrznych powiadomień (Lekcja 09, Warsztat 3)
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz DEFAULT now(),
+  type text NOT NULL,
+  data jsonb NOT NULL,
+  analysis text NOT NULL
+);
+
+-- Włączenie RLS dla tabeli webhook_events
+ALTER TABLE webhook_events ENABLE ROW LEVEL SECURITY;
