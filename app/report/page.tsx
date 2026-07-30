@@ -55,8 +55,20 @@ export default function ReportPage() {
       });
 
       if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || 'Nie udało się wygenerować raportu.');
+        const status = response.status;
+        const statusText = response.statusText;
+        let errorMessage = '';
+        try {
+          const errData = await response.json();
+          errorMessage = errData.error || JSON.stringify(errData);
+        } catch (e) {
+          errorMessage = await response.text().catch(() => '');
+        }
+        
+        throw new Error(
+          `Błąd API (${status} ${statusText}): ${errorMessage || 'Nieznany błąd serwera.'} ` +
+          (status === 504 ? 'Prawdopodobnie przekroczono limit czasu (Timeout 10s) na darmowym planie Vercel.' : '')
+        );
       }
 
       const reader = response.body?.getReader();
