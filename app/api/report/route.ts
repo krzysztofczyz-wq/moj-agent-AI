@@ -1,5 +1,5 @@
 import { google } from '@ai-sdk/google';
-import { streamText } from 'ai';
+import { streamText, isStepCount } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
 import { readWebPage, searchWikipedia, calculator } from '@/lib/tools';
 
@@ -87,6 +87,7 @@ ZASADY:
       prompt: `Napisz raport na temat: "${topic}"`,
       tools: tools as any,
       maxSteps: 8,
+      stopWhen: isStepCount(8),
     } as any);
 
     return result.toTextStreamResponse();
