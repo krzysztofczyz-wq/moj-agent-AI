@@ -27,7 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/email-triage', label: 'E-mail Triage', icon: '📧' },
   { href: '/report', label: 'Raporty', icon: '📊' },
   { href: '/competitor', label: 'Konkurencja', icon: '🏢' },
-  { href: '/meeting-summary', label: 'Spotkania', icon: '📋' },
+  { href: '/social-media', label: 'Social Media', icon: '📱' },
 ];
 
 export default function NavigationLayout({ children }: { children: React.ReactNode }) {
