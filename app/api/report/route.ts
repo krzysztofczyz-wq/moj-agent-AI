@@ -3,7 +3,7 @@ import { streamText } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
 import { readWebPage, searchWikipedia, calculator } from '@/lib/tools';
 
-export const runtime = 'edge';
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
@@ -89,33 +89,7 @@ ZASADY:
       maxSteps: 8,
     } as any);
 
-    // Read the stream chunks and pipe them, catching any runtime model/stream errors
-    const encoder = new TextEncoder();
-    const customStream = new ReadableStream({
-      async start(controller) {
-        try {
-          const reader = result.textStream.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(encoder.encode(value));
-          }
-          controller.close();
-        } catch (error: any) {
-          console.error("Stream reader execution error:", error);
-          controller.enqueue(encoder.encode(`\n\n⚠️ **Błąd krytyczny generowania raportu:** ${error.message || error}`));
-          controller.close();
-        }
-      }
-    });
-
-    return new Response(customStream, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      }
-    });
+    return result.toTextStreamResponse();
   } catch (error: any) {
     console.error('Error in report API:', error);
     return new Response(JSON.stringify({ error: error.message || 'Internal Server Error' }), { status: 500 });
