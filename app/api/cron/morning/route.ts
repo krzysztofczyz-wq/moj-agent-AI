@@ -1,6 +1,6 @@
 import { google } from '@ai-sdk/google';
 import { generateText } from 'ai';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin, getSupabaseClient } from '@/lib/supabase';
 import { getWeather, getExchangeRate, currentDateTime } from '@/lib/tools';
 import { NextResponse } from 'next/server';
 
@@ -8,12 +8,34 @@ export const maxDuration = 30; // Ustawienie limitu czasu na 30 sekund
 
 export async function GET(req: Request) {
   try {
-    // Sprawdzenie nagłówka Authorization (Vercel Cron używa Bearer <CRON_SECRET>)
+    // Sprawdzenie nagłówka Authorization (Vercel Cron używa Bearer <CRON_SECRET>, klient Supabase token użytkownika)
     const authHeader = req.headers.get('authorization');
     const host = req.headers.get('host') || '';
     const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
 
-    if (!isLocalhost && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    let userId: string | null = null;
+    let isAuthorized = isLocalhost;
+
+    if (!isAuthorized && authHeader) {
+      if (authHeader === `Bearer ${process.env.CRON_SECRET}`) {
+        isAuthorized = true;
+      } else {
+        // Spróbuj zweryfikować jako token Supabase użytkownika
+        try {
+          const token = authHeader.replace('Bearer ', '');
+          const userClient = getSupabaseClient(token);
+          const { data: { user }, error: authError } = await userClient.auth.getUser();
+          if (user && !authError) {
+            isAuthorized = true;
+            userId = user.id;
+          }
+        } catch (e) {
+          console.error('[Cron Morning] Failed to authenticate user token:', e);
+        }
+      }
+    }
+
+    if (!isAuthorized) {
       console.warn('[Cron Morning] Unauthorized access attempt.');
       return new Response('Unauthorized', { status: 401 });
     }
@@ -89,6 +111,7 @@ Jesteś osobistym asystentem. Napisz poranny briefing w formacie:
       .insert({
         content: briefingContent,
         date: todayDateStr,
+        user_id: userId,
       });
 
     if (insertError) {

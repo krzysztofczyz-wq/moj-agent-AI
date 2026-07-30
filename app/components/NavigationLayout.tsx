@@ -13,6 +13,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: '🏠' },
+  { href: '/briefings', label: 'Briefingi', icon: '📰' },
   { href: '/upload', label: 'Baza wiedzy', icon: '📚' },
   { href: '/chat', label: 'Czat z personą', icon: '💬' },
   { href: '/history', label: 'Historia rozmów', icon: '📜' },
