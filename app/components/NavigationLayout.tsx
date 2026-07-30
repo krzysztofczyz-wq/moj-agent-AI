@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/react', label: 'Agent ReAct', icon: '🔄' },
   { href: '/travel', label: 'Asystent podróży', icon: '✈️' },
   { href: '/email-triage', label: 'E-mail Triage', icon: '📧' },
+  { href: '/report', label: 'Raporty', icon: '📊' },
 ];
 
 export default function NavigationLayout({ children }: { children: React.ReactNode }) {
