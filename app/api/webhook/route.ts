@@ -7,6 +7,16 @@ export const maxDuration = 30; // Ustawienie limitu czasu na 30 sekund
 
 export async function POST(req: Request) {
   try {
+    // Zabezpieczenie webhooka kluczem WEBHOOK_SECRET (z wyjątkiem testów lokalnych na localhost)
+    const authHeader = req.headers.get('authorization');
+    const host = req.headers.get('host') || '';
+    const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+
+    if (!isLocalhost && authHeader !== `Bearer ${process.env.WEBHOOK_SECRET}`) {
+      console.warn('[Webhook] Unauthorized access attempt.');
+      return new Response('Unauthorized', { status: 401 });
+    }
+
     const body = await req.json();
     const { type, data } = body;
 
