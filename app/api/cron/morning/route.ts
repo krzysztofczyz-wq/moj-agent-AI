@@ -10,7 +10,10 @@ export async function GET(req: Request) {
   try {
     // Sprawdzenie nagłówka Authorization (Vercel Cron używa Bearer <CRON_SECRET>)
     const authHeader = req.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const host = req.headers.get('host') || '';
+    const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+
+    if (!isLocalhost && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
       console.warn('[Cron Morning] Unauthorized access attempt.');
       return new Response('Unauthorized', { status: 401 });
     }
