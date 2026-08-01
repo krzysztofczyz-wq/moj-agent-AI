@@ -5,12 +5,15 @@ import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { supabase } from '../../lib/supabase';
 
 export default function SearchPage() {
   const [mode, setMode] = useState<'casual' | 'ekspert' | 'kreatywny'>('casual');
   const [model, setModel] = useState<'flash' | 'pro'>('flash');
   const [showExportSuccess, setShowExportSuccess] = useState(false);
   const [isContextCollapsed, setIsContextCollapsed] = useState(true);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   
   const { messages, sendMessage, setMessages, status } = useChat();
   
@@ -27,6 +30,18 @@ export default function SearchPage() {
     "Jakie filmy są teraz w kinach?"
   ];
 
+  // Fetch session on mount
+  useEffect(() => {
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setUserId(session.user.id);
+        setToken(session.access_token);
+      }
+    };
+    getSession();
+  }, []);
+
   // Auto-scroll to the bottom when new messages are added
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -36,13 +51,25 @@ export default function SearchPage() {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
     
-    sendMessage({ text: input }, { body: { mode, model } });
+    sendMessage(
+      { text: input },
+      { 
+        body: { mode, model, userId, isSearchPage: true },
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      }
+    );
     setInput('');
   };
 
   const handleSuggestionClick = (suggestion: string) => {
     if (isLoading) return;
-    sendMessage({ text: suggestion }, { body: { mode, model } });
+    sendMessage(
+      { text: suggestion },
+      { 
+        body: { mode, model, userId, isSearchPage: true },
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      }
+    );
   };
 
   const totalChars = messages.reduce((acc, m) => 

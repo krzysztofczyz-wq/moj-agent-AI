@@ -42,3 +42,47 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 
 -- Włączenie RLS dla tabeli webhook_events
 ALTER TABLE webhook_events ENABLE ROW LEVEL SECURITY;
+
+-- 6. Utworzenie tabeli message_logs dla logowania i limitowania zapytań (Lekcja 10, Warsztat 2)
+CREATE TABLE IF NOT EXISTS message_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at timestamptz DEFAULT now(),
+  message_length integer NOT NULL,
+  blocked boolean DEFAULT false,
+  message text,
+  reason text
+);
+
+-- Włączenie RLS dla tabeli message_logs
+ALTER TABLE message_logs ENABLE ROW LEVEL SECURITY;
+
+-- Polityka zezwalająca użytkownikom na odczyt własnych logów
+CREATE POLICY "Users can read their own message logs"
+ON message_logs
+FOR SELECT
+TO authenticated
+USING (auth.uid() = user_id);
+
+-- 7. Utworzenie tabeli api_usage do budżetowania kosztów (Lekcja 10, Warsztat 3)
+CREATE TABLE IF NOT EXISTS api_usage (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at timestamptz DEFAULT now(),
+  tokens_input integer NOT NULL,
+  tokens_output integer NOT NULL,
+  model text NOT NULL,
+  endpoint text NOT NULL
+);
+
+-- Włączenie RLS dla tabeli api_usage
+ALTER TABLE api_usage ENABLE ROW LEVEL SECURITY;
+
+-- Polityka zezwalająca użytkownikom na odczyt własnego zużycia
+CREATE POLICY "Users can read their own api usage"
+ON api_usage
+FOR SELECT
+TO authenticated
+USING (auth.uid() = user_id);
+
+

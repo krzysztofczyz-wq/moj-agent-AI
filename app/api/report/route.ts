@@ -2,6 +2,7 @@ import { google } from '@ai-sdk/google';
 import { streamText, isStepCount } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
 import { readWebPage, searchWikipedia, calculator } from '@/lib/tools';
+import { checkTokenBudget, logTokenUsage } from '@/lib/budget';
 
 export const maxDuration = 60;
 
@@ -18,6 +19,11 @@ export async function POST(req: Request) {
     const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized: invalid token' }), { status: 401 });
+    }
+
+    const budgetResult = await checkTokenBudget(user.id, '', '/api/report');
+    if (budgetResult.isBlocked) {
+      return new Response(JSON.stringify({ error: budgetResult.blockMsg }), { status: 429 });
     }
 
     const body = await req.json();
@@ -88,6 +94,11 @@ ZASADY:
       tools: tools as any,
       maxSteps: 8,
       stopWhen: isStepCount(8),
+      onFinish(event: any) {
+        if (event && event.usage) {
+          logTokenUsage(user.id, event.usage.promptTokens, event.usage.completionTokens, modelName, '/api/report');
+        }
+      }
     } as any);
 
     return result.toTextStreamResponse();

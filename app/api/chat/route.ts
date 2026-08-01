@@ -1,8 +1,9 @@
 import { google } from '@ai-sdk/google';
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, toUIMessageStream, convertToModelMessages, tool, isStepCount } from 'ai';
 import { z } from 'zod';
-import { supabase, getSupabaseClient } from '@/lib/supabase';
-import { executeSearchKnowledge, calculator } from '@/lib/tools';
+import { supabase, getSupabaseClient, supabaseAdmin } from '@/lib/supabase';
+import { executeSearchKnowledge, calculator, currentDateTime, searchWikipedia } from '@/lib/tools';
+import { checkTokenBudget, logTokenUsage } from '@/lib/budget';
 
 if (process.env.ENABLE_SEARCH_GROUNDING === 'true') {
   console.warn(
@@ -164,7 +165,7 @@ export async function POST(req: Request) {
 
   const body = await req.json();
   console.log("API POST Body received:", JSON.stringify(body));
-  const { messages: rawMessages, mode = 'casual', model = 'flash' } = body;
+  const { messages: rawMessages, mode = 'casual', model = 'flash', isSearchPage = false } = body;
 
   const messages = rawMessages.map((m: any) => {
     const parts = m.parts || (m.content ? [{ type: 'text', text: m.content }] : []);
@@ -185,6 +186,182 @@ export async function POST(req: Request) {
     };
   });
 
+  // Get last user message text
+  const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
+  let userText = '';
+  if (lastUserMsg) {
+    if (typeof lastUserMsg.content === 'string') {
+      userText = lastUserMsg.content;
+    } else if (Array.isArray(lastUserMsg.parts)) {
+      userText = lastUserMsg.parts.map((p: any) => p.text || '').join(' ');
+    } else if (Array.isArray(lastUserMsg.content)) {
+      userText = lastUserMsg.content.map((p: any) => p.text || '').join(' ');
+    }
+  }
+
+  // Sanitize: remove control characters and zero-width spaces
+  const controlCharsRegex = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200D\uFEFF]/g;
+  const sanitizedText = userText.replace(controlCharsRegex, '');
+
+  if (lastUserMsg) {
+    lastUserMsg.content = sanitizedText;
+    if (Array.isArray(lastUserMsg.parts)) {
+      lastUserMsg.parts = lastUserMsg.parts.map((p: any) => {
+        if (p.type === 'text') {
+          return { ...p, text: p.text.replace(controlCharsRegex, '') };
+        }
+        return p;
+      });
+    }
+  }
+
+  // 1. Rate Limiting Check (50 messages / hour)
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  let rateLimitCount = 0;
+  try {
+    const { count, error: countError } = await supabaseAdmin
+      .from('message_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte('created_at', oneHourAgo);
+
+    if (countError) throw countError;
+    rateLimitCount = count || 0;
+  } catch (err) {
+    console.error("Error checking rate limit in DB:", err);
+  }
+
+  if (rateLimitCount >= 50) {
+    let minutesToWait = 60;
+    try {
+      const { data: oldestMsg } = await supabaseAdmin
+        .from('message_logs')
+        .select('created_at')
+        .eq('user_id', userId)
+        .gte('created_at', oneHourAgo)
+        .order('created_at', { ascending: true })
+        .limit(1);
+
+      if (oldestMsg && oldestMsg.length > 0) {
+        const oldestTime = new Date(oldestMsg[0].created_at).getTime();
+        const diffMs = (oldestTime + 60 * 60 * 1000) - Date.now();
+        minutesToWait = Math.max(1, Math.ceil(diffMs / (60 * 1000)));
+      }
+    } catch (err) {
+      console.error("Error getting oldest message for rate limit:", err);
+    }
+
+    const blockMsg = `Osiągnąłeś limit wiadomości (50/h). Spróbuj za ${minutesToWait} minut.`;
+
+    try {
+      await supabaseAdmin.from('message_logs').insert({
+        user_id: userId,
+        message_length: userText.length,
+        blocked: true,
+        message: userText.slice(0, 1000),
+        reason: 'rate_limit'
+      });
+    } catch (e) {
+      console.error("Error logging rate limit block:", e);
+    }
+
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        writer.write({ type: 'text-start', id: 'rate-limit-block' });
+        writer.write({
+          type: 'text-delta',
+          id: 'rate-limit-block',
+          delta: blockMsg
+        });
+        writer.write({ type: 'text-end', id: 'rate-limit-block' });
+      }
+    });
+    return createUIMessageStreamResponse({ stream });
+  }
+
+  // 1.5 Token Budget Check (10,000 tokens / day)
+  const budgetResult = await checkTokenBudget(userId, userText, '/api/chat');
+  if (budgetResult.isBlocked) {
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        writer.write({ type: 'text-start', id: 'budget-block' });
+        writer.write({
+          type: 'text-delta',
+          id: 'budget-block',
+          delta: budgetResult.blockMsg || "Dzienny limit tokenów został wyczerpany."
+        });
+        writer.write({ type: 'text-end', id: 'budget-block' });
+      }
+    });
+    return createUIMessageStreamResponse({ stream });
+  }
+
+  // 2. Input Validation Check
+  let isInputBlocked = false;
+  let inputBlockReason = '';
+
+  if (sanitizedText.length > 2000) {
+    isInputBlocked = true;
+    inputBlockReason = 'input_length';
+  } else {
+    const blacklist = [
+      "ignore previous",
+      "system prompt",
+      "ignore instructions",
+      "reveal",
+      "show me your",
+      "translate your prompt"
+    ];
+    const textLower = sanitizedText.toLowerCase();
+    for (const term of blacklist) {
+      if (textLower.includes(term)) {
+        isInputBlocked = true;
+        inputBlockReason = `blacklist:${term}`;
+        break;
+      }
+    }
+  }
+
+  if (isInputBlocked) {
+    try {
+      await supabaseAdmin.from('message_logs').insert({
+        user_id: userId,
+        message_length: userText.length,
+        blocked: true,
+        message: userText.slice(0, 1000),
+        reason: inputBlockReason
+      });
+    } catch (e) {
+      console.error("Error logging blocked input:", e);
+    }
+
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        writer.write({ type: 'text-start', id: 'input-block' });
+        writer.write({
+          type: 'text-delta',
+          id: 'input-block',
+          delta: "Ta wiadomość została zablokowana z powodów bezpieczeństwa."
+        });
+        writer.write({ type: 'text-end', id: 'input-block' });
+      }
+    });
+    return createUIMessageStreamResponse({ stream });
+  }
+
+  // 3. Log non-blocked message
+  let logId: string | null = null;
+  try {
+    const { data: logData } = await supabaseAdmin.from('message_logs').insert({
+      user_id: userId,
+      message_length: sanitizedText.length,
+      blocked: false
+    }).select('id').single();
+    if (logData) logId = logData.id;
+  } catch (err) {
+    console.error("Error logging successful message to DB:", err);
+  }
+
   // 1. Fetch user profile from Supabase
   let userProfile: any = null;
   if (userId) {
@@ -201,7 +378,6 @@ export async function POST(req: Request) {
   }
 
   // 1.5 Parse name/preferences from last user message (Opcja B - fallback)
-  const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
   if (lastUserMsg && userId) {
     const text = (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '').trim();
     
@@ -300,7 +476,7 @@ export async function POST(req: Request) {
         });
 
         // Determine if search is relevant to avoid combining function tools with provider-defined tools
-        const needsSearch = messages.some((m: any) => {
+        const needsSearch = isSearchPage || messages.some((m: any) => {
           if (m.role !== 'user') return false;
           let textContent = '';
           if (typeof m.content === 'string' && m.content) {
@@ -309,7 +485,7 @@ export async function POST(req: Request) {
             textContent = m.parts.map((p: any) => p.text || '').join(' ');
           }
           const text = textContent.toLowerCase();
-          return /szukaj|wyszukaj|znajdź|kurs|cena|cenę|akcje|obligacje|notowania|news|wiadomości|aktualne|dzisiaj|dzisiejsze|jutro/i.test(text);
+          return /szukaj|wyszukaj|znajdź|kurs|cena|cenę|akcje|obligacje|notowania|news|wiadomości|aktualne|dzisiaj|dzisiejsze|jutro|dzis|rok|data/i.test(text);
         });
 
         console.log(`[Chat] containsUrl=${containsUrl}, needsSearch=${needsSearch}`);
@@ -325,6 +501,8 @@ export async function POST(req: Request) {
             },
           } as any),
           calculator,
+          currentDateTime,
+          searchWikipedia,
           saveUserName: tool({
             description: 'Zapisuje imię użytkownika w jego profilu w bazie danych.',
             parameters: z.object({
@@ -515,7 +693,120 @@ export async function POST(req: Request) {
                 },
               });
 
-              await writer.merge(toUIMessageStream({ stream: reconstructedStream as any }));
+              // Read all chunks from reconstructedStream to verify/filter the output
+              const reader = reconstructedStream.getReader();
+              const allChunks: any[] = [];
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  allChunks.push(value);
+                }
+              } catch (readErr) {
+                console.error("Error reading stream for output filtering:", readErr);
+              }
+
+              // Extract accumulated text from text-delta chunks
+              let fullText = '';
+              for (const chunk of allChunks) {
+                if (chunk.type === 'text-delta') {
+                  fullText += chunk.text || chunk.textDelta || '';
+                }
+              }
+
+              // Output leak detection patterns
+              const systemPromptPhrases = [
+                "Oskar — Licencjonowany makler",
+                "doradca inwestycyjny z 15-letnim doświadczeniem",
+                "Struktura każdej odpowiedzi",
+                "ZASADY KORZYSTANIA Z BAZY WIEDZY",
+                "CZEGO NIE ROBIĘ"
+              ];
+
+              const technicalPatterns = [
+                /api_key/i,
+                /supabase_url/i,
+                /system prompt/i,
+                /user_profiles/i,
+                /message_logs/i,
+                /webhook_events/i,
+                /conversations/i,
+                /documents/i,
+                /eyJhbGciOi/i, // JWT signature
+                /AIzaSy/i,    // Google API key signature
+              ];
+
+              let hasLeak = false;
+              for (const phrase of systemPromptPhrases) {
+                if (fullText.includes(phrase)) {
+                  hasLeak = true;
+                  break;
+                }
+              }
+
+              if (!hasLeak) {
+                for (const regex of technicalPatterns) {
+                  if (regex.test(fullText)) {
+                    hasLeak = true;
+                    break;
+                  }
+                }
+              }
+
+              let finalChunks = allChunks;
+              if (hasLeak) {
+                console.warn("[Security] Output leak detected! Replacing response with safe warning.");
+                if (logId) {
+                  try {
+                    await supabaseAdmin.from('message_logs')
+                      .update({ blocked: true, reason: 'output_filter_leak', message: userText.slice(0, 1000) })
+                      .eq('id', logId);
+                  } catch (logErr) {
+                    console.error("Error updating log on output block:", logErr);
+                  }
+                }
+
+                // Replace the stream content with the blocked response
+                finalChunks = [
+                  { type: 'text-delta', id: '0', text: "Przepraszam, nie mogę udostępnić tych informacji.", textDelta: "Przepraszam, nie mogę udostępnić tych informacji." },
+                  { type: 'finish', finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 } }
+                ];
+              }
+
+              // Extract usage tokens
+              let promptTokens = 0;
+              let completionTokens = 0;
+              for (const chunk of allChunks) {
+                if (chunk.type === 'finish' && chunk.totalUsage) {
+                  promptTokens = chunk.totalUsage.inputTokens || 0;
+                  completionTokens = chunk.totalUsage.outputTokens || 0;
+                  break;
+                } else if (chunk.type === 'finish-step' && chunk.usage) {
+                  promptTokens = chunk.usage.inputTokens || 0;
+                  completionTokens = chunk.usage.outputTokens || 0;
+                }
+              }
+
+              // Log token usage to database
+              if (promptTokens > 0 || completionTokens > 0) {
+                try {
+                  await logTokenUsage(userId, promptTokens, completionTokens, modelName, '/api/chat');
+                } catch (logErr) {
+                  console.error("Error logging token usage in chat API:", logErr);
+                }
+              }
+
+              // Reconstruct the filtered stream
+              const filteredStream = new ReadableStream({
+                start(controller) {
+                  for (const chunk of finalChunks) {
+                    controller.enqueue(chunk);
+                  }
+                  controller.close();
+                }
+              });
+
+              await writer.merge(toUIMessageStream({ stream: filteredStream as any }));
               success = true;
               break;
             } else {

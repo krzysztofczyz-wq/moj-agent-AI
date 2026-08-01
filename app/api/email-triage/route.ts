@@ -1,6 +1,7 @@
 import { google } from '@ai-sdk/google';
 import { streamText } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
+import { checkTokenBudget, logTokenUsage } from '@/lib/budget';
 
 export const maxDuration = 60;
 
@@ -17,6 +18,11 @@ export async function POST(req: Request) {
     const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized: invalid token' }), { status: 401 });
+    }
+
+    const budgetResult = await checkTokenBudget(user.id, '', '/api/email-triage');
+    if (budgetResult.isBlocked) {
+      return new Response(JSON.stringify({ error: budgetResult.blockMsg }), { status: 429 });
     }
 
     const body = await req.json();
@@ -58,10 +64,16 @@ PODSUMOWANIE
 - 🟢 Niskie: [ile] maili
 - ✅ Rekomendacja: [który mail obsłużyć najpierw]`;
 
+    const modelName = 'gemini-3.1-flash-lite';
     const result = streamText({
-      model: google('gemini-3.1-flash-lite'),
+      model: google(modelName),
       system: systemPrompt,
       prompt: userContent,
+      onFinish(event: any) {
+        if (event && event.usage) {
+          logTokenUsage(user.id, event.usage.promptTokens, event.usage.completionTokens, modelName, '/api/email-triage');
+        }
+      }
     });
 
     return result.toTextStreamResponse();

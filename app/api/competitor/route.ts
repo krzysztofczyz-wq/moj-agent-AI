@@ -2,6 +2,7 @@ import { google } from '@ai-sdk/google';
 import { streamText, isStepCount } from 'ai';
 import { getSupabaseClient } from '@/lib/supabase';
 import { readWebPage, searchWikipedia } from '@/lib/tools';
+import { checkTokenBudget, logTokenUsage } from '@/lib/budget';
 
 export const maxDuration = 60; // Allow 60s for research & generation
 
@@ -18,6 +19,11 @@ export async function POST(req: Request) {
     const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized: invalid token' }), { status: 401 });
+    }
+
+    const budgetResult = await checkTokenBudget(user.id, '', '/api/competitor');
+    if (budgetResult.isBlocked) {
+      return new Response(JSON.stringify({ error: budgetResult.blockMsg }), { status: 429 });
     }
 
     const body = await req.json();
@@ -87,6 +93,11 @@ Kontekst biznesowy/użytkownika: ${context || 'Brak dodatkowego kontekstu (ogól
       tools: tools as any,
       maxSteps: 10,
       stopWhen: isStepCount(10),
+      onFinish(event: any) {
+        if (event && event.usage) {
+          logTokenUsage(user.id, event.usage.promptTokens, event.usage.completionTokens, modelName, '/api/competitor');
+        }
+      }
     } as any);
 
     return result.toTextStreamResponse();
